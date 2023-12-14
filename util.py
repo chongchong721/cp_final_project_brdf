@@ -157,8 +157,6 @@ def to_spherical(w):
     # else:
     theta = np.arccos(w[2][0])
     phi = np.arctan2(w[1][0], w[0][0])
-    if phi < 0.0:
-        phi += 2 * np.pi
     return theta, phi
 
 def to_spherical_1D(w):
@@ -169,21 +167,16 @@ def to_spherical_1D(w):
     # else:
     theta = np.arccos(w[2])
     phi = np.arctan2(w[1], w[0])
-    if phi < 0.0:
-        phi += 2 * np.pi
     return theta, phi
 
 def to_spherical_vectorized(w):
     theta = np.arccos(w[2,:])
     phi = np.arctan2(w[1,:],w[0,:])
-    phi = np.where(phi < 0.0, phi + np.pi * 2, phi)
     return theta,phi
 
 def to_spherical_stable(w):
     theta = 2 * np.arcsin(0.5 * np.sqrt(w[0][0] ** 2 + w[1][0] ** 2 + (w[2][0]-1) ** 2))
     phi = np.arctan2(w[1][0],w[0][0])
-    if phi < 0.0:
-        phi += 2 * np.pi
     return theta, phi
 
 

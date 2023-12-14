@@ -160,9 +160,6 @@ class MERL_BRDF{
 
 		std::vector<double> half_diff_conversion_wrapper(double theta_in, double fi_in, double theta_out, double fi_out);
 
-
-		double reduce_fi_d(double fi_d);
-
 		double lookup_one_channel(double theta_in,double fi_in,
 					double theta_out, double fi_out,int idx);
 
@@ -180,6 +177,8 @@ MERL_BRDF::MERL_BRDF(std::string filename){
 		vector_data_r = std::vector<double>(data,data + size);
 		vector_data_g = std::vector<double>(data + size, data + size * 2);
 		vector_data_b = std::vector<double>(data + size * 2, data + size * 3);
+		//it takes too much memory
+		free(this->data);
 	}
 }
 
@@ -303,10 +302,14 @@ void MERL_BRDF::lookup_brdf_val(double theta_in, double fi_in,
 		theta_half_index(theta_half) * BRDF_SAMPLING_RES_PHI_D / 2 *
 							BRDF_SAMPLING_RES_THETA_D;
 
-	red_val = this->data[ind] * RED_SCALE;
-	green_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D/2] * GREEN_SCALE;
-	blue_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D] * BLUE_SCALE;
+	// red_val = this->data[ind] * RED_SCALE;
+	// green_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D/2] * GREEN_SCALE;
+	// blue_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D] * BLUE_SCALE;
 
+
+	red_val = this->vector_data_r[ind] * RED_SCALE;
+	green_val = this->vector_data_g[ind] * GREEN_SCALE;
+	blue_val = this->vector_data_b[ind] * BLUE_SCALE;
 	
 	if (red_val < 0.0 || green_val < 0.0 || blue_val < 0.0)
 		fprintf(stderr, "Below horizon.\n");
@@ -366,7 +369,7 @@ std::vector<double> MERL_BRDF::half_diff_conversion_wrapper(double theta_in, dou
 }
 
 
-double MERL_BRDF::reduce_fi_d(double phi_d){
+double  reduce_fi_d(double phi_d){
 	if (phi_d < 0.0)
 		phi_d += M_PI;
 
@@ -417,13 +420,223 @@ double MERL_BRDF::lookup_one_channel(double theta_in,double fi_in, double theta_
 }
 
 
+inline int theta_half_index(double theta_half)
+{
+	if (theta_half <= 0.0)
+		return 0;
+	double theta_half_deg = ((theta_half / (M_PI/2.0))*BRDF_SAMPLING_RES_THETA_H);
+	double temp = theta_half_deg*BRDF_SAMPLING_RES_THETA_H;
+	temp = sqrt(temp);
+	int ret_val = (int)temp;
+	if (ret_val < 0) ret_val = 0;
+	if (ret_val >= BRDF_SAMPLING_RES_THETA_H)
+		ret_val = BRDF_SAMPLING_RES_THETA_H-1;
+	return ret_val;
+}
+
+
+inline double theta_half_rad(int idx){
+	double temp = idx * idx;
+	temp /= BRDF_SAMPLING_RES_THETA_H;
+
+	return temp * M_PI / 180.0;
+}
+
+
+// Lookup theta_diff index
+// In:  [0 .. pi/2]
+// Out: [0 .. 89]
+inline int theta_diff_index(double theta_diff)
+{
+	int tmp = int(theta_diff / (M_PI * 0.5) * BRDF_SAMPLING_RES_THETA_D);
+	if (tmp < 0)
+		return 0;
+	else if (tmp < BRDF_SAMPLING_RES_THETA_D - 1)
+		return tmp;
+	else
+		return BRDF_SAMPLING_RES_THETA_D - 1;
+}
+
+inline double theta_diff_rad(int idx){
+	return (double)idx * M_PI / 180.0;
+}
+
+
+// Lookup phi_diff index
+inline int phi_diff_index(double phi_diff)
+{
+	// Because of reciprocity, the BRDF is unchanged under
+	// phi_diff -> phi_diff + M_PI
+	if (phi_diff < 0.0)
+		phi_diff += M_PI;
+
+	// In: phi_diff in [0 .. pi]
+	// Out: tmp in [0 .. 179]
+	int tmp = int(phi_diff / M_PI * BRDF_SAMPLING_RES_PHI_D / 2);
+	if (tmp < 0)	
+		return 0;
+	else if (tmp < BRDF_SAMPLING_RES_PHI_D / 2 - 1)
+		return tmp;
+	else
+		return BRDF_SAMPLING_RES_PHI_D / 2 - 1;
+}
+
+inline double phi_diff_rad(int idx){
+	return (double)idx * M_PI / 180.0;
+}
+
+
+// cross product of two vectors
+void cross_product (double* v1, double* v2, double* out)
+{
+	out[0] = v1[1]*v2[2] - v1[2]*v2[1];
+	out[1] = v1[2]*v2[0] - v1[0]*v2[2];
+	out[2] = v1[0]*v2[1] - v1[1]*v2[0];
+}
+
+// normalize vector
+void normalize(double* v)
+{
+	// normalize
+	double len = sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+	v[0] = v[0] / len;
+	v[1] = v[1] / len;
+	v[2] = v[2] / len;
+}
+
+// rotate vector along one axis
+void rotate_vector(double* vector, double* axis, double angle, double* out)
+{
+	double temp;
+	double cross[3];
+	double cos_ang = cos(angle);
+	double sin_ang = sin(angle);
+
+	out[0] = vector[0] * cos_ang;
+	out[1] = vector[1] * cos_ang;
+	out[2] = vector[2] * cos_ang;
+
+	temp = axis[0]*vector[0]+axis[1]*vector[1]+axis[2]*vector[2];
+	temp = temp*(1.0-cos_ang);
+
+	out[0] += axis[0] * temp;
+	out[1] += axis[1] * temp;
+	out[2] += axis[2] * temp;
+
+	cross_product (axis,vector,cross);
+	
+	out[0] += cross[0] * sin_ang;
+	out[1] += cross[1] * sin_ang;
+	out[2] += cross[2] * sin_ang;
+}
+
+
+// convert standard coordinates to half vector/difference vector coordinates
+void std_coords_to_half_diff_coords(double theta_in, double fi_in, double theta_out, double fi_out,
+								double& theta_half,double& fi_half,double& theta_diff,double& fi_diff )
+{
+
+	// compute in vector
+	double in_vec_z = cos(theta_in);
+	double proj_in_vec = sin(theta_in);
+	double in_vec_x = proj_in_vec*cos(fi_in);
+	double in_vec_y = proj_in_vec*sin(fi_in);
+	double in[3]= {in_vec_x,in_vec_y,in_vec_z};
+	normalize(in);
+
+
+	// compute out vector
+	double out_vec_z = cos(theta_out);
+	double proj_out_vec = sin(theta_out);
+	double out_vec_x = proj_out_vec*cos(fi_out);
+	double out_vec_y = proj_out_vec*sin(fi_out);
+	double out[3]= {out_vec_x,out_vec_y,out_vec_z};
+	normalize(out);
+
+
+	// compute halfway vector
+	double half_x = (in_vec_x + out_vec_x)/2.0f;
+	double half_y = (in_vec_y + out_vec_y)/2.0f;
+	double half_z = (in_vec_z + out_vec_z)/2.0f;
+	double half[3] = {half_x,half_y,half_z};
+	normalize(half);
+
+	// compute  theta_half, fi_half
+	theta_half = acos(half[2]);
+	fi_half = atan2(half[1], half[0]);
+
+
+	double bi_normal[3] = {0.0, 1.0, 0.0};
+	double normal[3] = { 0.0, 0.0, 1.0 };
+	double temp[3];
+	double diff[3];
+
+	// compute diff vector
+	rotate_vector(in, normal , -fi_half, temp);
+	rotate_vector(temp, bi_normal, -theta_half, diff);
+	
+	// compute  theta_diff, fi_diff	
+	theta_diff = acos(diff[2]);
+	fi_diff = atan2(diff[1], diff[0]);
+}
+
+
+std::vector<double> half_diff_conversion_wrapper(double theta_in, double fi_in, double theta_out, double fi_out){
+	double theta_half, fi_half, theta_diff, fi_diff;
+
+	std_coords_to_half_diff_coords(theta_in,fi_in,theta_out,fi_out,theta_half,fi_half,theta_diff,fi_diff);
+
+	return std::vector<double>{theta_half,fi_half,theta_diff,fi_diff};
+
+}
+
+
+
+int get_index_from_hall_diff_coord(double theta_half, double theta_diff, double phi_diff){
+	int ind = phi_diff_index(phi_diff) +
+	theta_diff_index(theta_diff) * BRDF_SAMPLING_RES_PHI_D / 2 +
+	theta_half_index(theta_half) * BRDF_SAMPLING_RES_PHI_D / 2 *
+						BRDF_SAMPLING_RES_THETA_D;
+
+	std::cout << theta_half_index(theta_half) << theta_diff_index(theta_diff) << phi_diff_index(phi_diff) << std::endl;
+
+	return ind;
+}
+
+
+std::vector<double> get_half_diff_coord_from_index(int idx){
+	int phi_diff_idx,theta_diff_idx,theta_half_idx;
+
+	theta_half_idx = idx / (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D);
+	theta_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) / (BRDF_SAMPLING_RES_PHI_D / 2);
+	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D) - theta_diff_idx * (BRDF_SAMPLING_RES_PHI_D / 2));
+
+	return std::vector<double>{theta_half_rad(theta_half_idx),theta_diff_rad(theta_diff_idx),phi_diff_rad(phi_diff_idx)};
+}
+
+std::vector<int> get_half_diff_idxes_from_index(int idx){
+	int phi_diff_idx,theta_diff_idx,theta_half_idx;
+
+	theta_half_idx = idx / (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D);
+	theta_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) / (BRDF_SAMPLING_RES_PHI_D / 2);
+	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D) - theta_diff_idx * (BRDF_SAMPLING_RES_PHI_D / 2));
+
+	return std::vector<int>{theta_half_idx,theta_diff_idx,phi_diff_idx};
+}
+
+
+int get_index_from_half_diff_idxes(int theta_half_idx,int theta_diff_idx,int phi_diff_idx){
+	return 	phi_diff_idx + theta_diff_idx * BRDF_SAMPLING_RES_PHI_D / 2 +
+	theta_half_idx * BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D;
+}
+
+
+
 PYBIND11_MODULE(merl,m){
 	py::class_<MERL_BRDF>(m,"MERL_BRDF")
 	.def(py::init<std::string&>())
 	.def("look_up",&MERL_BRDF::lookup_wrapper)
-	.def("convert_to_hd",&MERL_BRDF::half_diff_conversion_wrapper)
-	.def("reduce_phi_d", &MERL_BRDF::reduce_fi_d)
-	.def_readwrite("m_data",&MERL_BRDF::data)
+	.def("look_up_channel",&MERL_BRDF::lookup_one_channel)
 	.def_readonly("m_size",&MERL_BRDF::size)
 	.def_readwrite("r_channel_unscaled", &MERL_BRDF::vector_data_r)
 	.def_readwrite("g_channel_unscaled", &MERL_BRDF::vector_data_g)
@@ -431,4 +644,15 @@ PYBIND11_MODULE(merl,m){
 	.def_readonly("r_scale",&MERL_BRDF::RED_SCALE)
 	.def_readonly("b_scale",&MERL_BRDF::BLUE_SCALE)
 	.def_readonly("g_scale",&MERL_BRDF::GREEN_SCALE);
+
+
+	m.def("get_index_from_hall_diff_coords", &get_index_from_hall_diff_coord,"params -> [0]:theta_half [1]:theta_diff [2]phi_diff")
+	.def("convert_to_hd",&half_diff_conversion_wrapper,"params -> [0]:theta_in [1]:theta_in [2]theta_out [3]phi_out\nreturn list[float] -> [0]:theta_half [1]:phi_half [2]:theta_diff [3]phi_diff")
+	.def("reduce_phi_d", &reduce_fi_d)
+	.def("get_half_diff_coord_from_index",&get_half_diff_coord_from_index,"return list[float] in rad -> [0]:theta_half [1]:theta_diff [2]phi_diff")
+	.def("get_half_diff_idxes_from_index",&get_half_diff_idxes_from_index,"return list[int] in degree/index -> [0]:theta_half [1]:theta_diff [2]phi_diff")
+	.def("get_index_from_half_diff_idxes",&get_index_from_half_diff_idxes, "param -> [0]:theta_half [1]:theta_diff [2]phi_diff")
+	.def("theta_half_rad",&theta_half_rad)
+	.def("theta_diff_rad",&theta_diff_rad)
+	.def("phi_diff_rad",&phi_diff_rad);
 }
