@@ -22,6 +22,7 @@ class MERL_Collection:
     BRDF_array : np.ndarray
     X : np.ndarray
     cos_precomputed : np.ndarray
+    mean : np.ndarray
 
     ## valid mask
     valid_mask_precomputed : np.ndarray
@@ -40,7 +41,8 @@ class MERL_Collection:
     theta_h : list
 
 
-    size : int
+    size: int
+    valid_size: int
 
     
     def __init__(self) -> None:
@@ -143,7 +145,7 @@ class MERL_Collection:
             median = np.median(self.BRDF_array,axis=0).astype(np.float32)
             median = np.tile(median,(self.BRDF_array.shape[0],1))
             cos = np.tile(self.cos_precomputed,(self.BRDF_array.shape[0],1))
-            self.X = np.log(   (self.BRDF_array * cos + self.epsilon) / (median * cos + self.epsilon))
+            self.X = np.log((self.BRDF_array * cos + self.epsilon) / (median * cos + self.epsilon))
             self.X = self.X.astype(np.float32)
             np.save("./arrays/X.npy",self.X)
 
@@ -165,11 +167,9 @@ class MERL_Collection:
             self.valid_offset_noNan = np.load("./arrays/valid_offset_noNan.npy")
 
 
+
         else:
-
             n_invalid = 0
-
-
             self.valid_mask_precomputed = np.zeros(self.size,dtype=np.float32)
             self.valid_offset = np.zeros(self.size,dtype=np.float32)
             self.valid_offset = np.where(self.valid_offset == 0, np.NAN, np.NAN).astype(np.float32)
@@ -191,6 +191,8 @@ class MERL_Collection:
             np.save("./arrays/valid_offset_noNan.npy",self.valid_offset_noNan)
             np.save("./arrays/valid_mask_precomputed.npy",self.valid_mask_precomputed)
             np.save("./arrays/valid_col_idx.npy",self.valid_col_idx)
+
+        self.valid_size = self.valid_col_idx.size
 
 
     def generate_cos_weight(self):
@@ -219,34 +221,41 @@ class MERL_Collection:
 
 
     def extract_PC(self):
-        print("Extracting principal component")
 
 
-        mean = np.mean(self.X,axis=0)
-
-        mean = np.tile(mean,(self.BRDF_array.shape[0],1)).astype(np.float32)
-
-        temp = self.X - mean
-
-        temp = temp[:,self.valid_col_idx]
-
-
-        result = np.linalg.svd(temp,False)
-
-        np.save("./arrays/SVD_Vh.npy",result.Vh)
-
-        matrix_s = np.eye(result.S.size)
-
-        for i in range(result.S.size):
-            matrix_s[i,i] *= result.S[i]
-
-        np.save("./arrays/SVD_S.npy",matrix_s)
-
-        np.save("./arrays/scaled_PC.npy", result.Vh.T @ matrix_s)
+        if os.path.exists("./arrays/mean.npy"):
+            self.mean = np.load("./arrays/mean.npy")
+            print("Reading mean")
+        else:
+            self.mean = np.mean(self.X, axis=0)
+            np.save("./arrays/mean.npy",self.mean)
+            print("Computing mean")
 
 
+        if os.path.exists("./arrays/scaled_PC.npy"):
+            print("Reading principal component")
+            self.scaled_pc = np.load("./arrays/scaled_PC.npy")
+        else:
+            print("Extracting principal component")
 
-        print("Done")
+            mean = np.tile(self.mean,(self.BRDF_array.shape[0],1)).astype(np.float32)
+
+            temp = self.X - mean
+            temp = temp[:,self.valid_col_idx]
+
+            result = np.linalg.svd(temp,False)
+
+            np.save("./arrays/SVD_Vh.npy",result.Vh)
+
+            matrix_s = np.eye(result.S.size)
+            for i in range(result.S.size):
+                matrix_s[i,i] *= result.S[i]
+
+            np.save("./arrays/SVD_S.npy",matrix_s)
+            np.save("./arrays/scaled_PC.npy", result.Vh.T @ matrix_s)
+
+
+
 
     #
     def convert_from_validIdx_to_fullIdx(self, idx):
@@ -289,6 +298,8 @@ class MERL_Collection:
 
     def find_optimal_directions(self,n_dir):
 
+        np.seterr('raise')
+
         rng = np.random.default_rng()
 
         grad_dirs = np.array([[1, 0, 0],  # Gradient directions
@@ -311,6 +322,7 @@ class MERL_Collection:
 
 
         self.scaled_pc = np.load("./arrays/scaled_PC.npy")
+        self.mean = np.load("./arrays/mean.npy")
 
 
         while len(flatten_idx_list) != n_dir:
@@ -356,7 +368,7 @@ class MERL_Collection:
                                 best_idxes_list_current_run = copy.deepcopy(idxes_list_new)
 
 
-                if (last_conditional_num - best_condition_num) / last_conditional_num * 100 <= converge_percentage:
+                if last_conditional_num!=np.inf and (last_conditional_num - best_condition_num) / last_conditional_num * 100 <= converge_percentage:
                     step_size = 1
                     n_meet_convergence += 1
                     if n_meet_convergence > 2:
@@ -371,7 +383,27 @@ class MERL_Collection:
 
                 last_conditional_num = best_condition_num
 
+        self.save_dir_related_info(flatten_idx_list, idxes_list)
+
         return flatten_idx_list, idxes_list
+
+
+    def save_dir_related_info(self,flatten_idx_list, idxes_list):
+        np.save("./direction/flatten_idx_list.npy", np.array(flatten_idx_list))
+        np.save("./direction/idxes_list.npy", np.array(idxes_list))
+
+        n_list = np.array(flatten_idx_list).astype(np.int32)
+        n_list_valid = n_list - self.valid_offset[n_list]
+        n_list_valid = n_list_valid.astype(np.int32)
+        q = self.scaled_pc[n_list_valid, :]
+
+        np.save("./direction/reduced_scaled_PC.npy", q)
+
+        mean = self.mean[n_list.astype(np.int32)]
+        np.save("./direction/reduced_mean.npy",mean)
+
+
+
 
     def clip_idx(self, idxes : np.ndarray):
         # index_list must follow t_h,t_d,p_d
@@ -450,21 +482,123 @@ class MERL_Collection:
             print("?")
 
 
+class linear_combination_brdf:
+    reference_merl: MERL_Collection
+    flatten_idx_list: np.ndarray
+    idxes_list: np.ndarray
+    reduced_scaled_PC: np.ndarray
+    reduced_mean: np.ndarray
+
+    # should be 3 * n_dir
+    observed_rgb : np.ndarray
+
+    c : np.ndarray
+
+    BRDF_array : np.ndarray
+
+    eta : float
+
+    def __init__(self, has_data : bool, find_direction:bool = False):
+        if not has_data:
+            self.reference_merl = MERL_Collection()
+            self.reference_merl.generate_valid_mask()
+            self.reference_merl.generate_cos_weight()
+            self.reference_merl.get_reference()
+            self.reference_merl.extract_PC()
+            if find_direction:
+                self.flatten_idx_list, self.idxes_list = self.reference_merl.find_optimal_directions(20)
+            self.BRDF_array = self.reference_merl.BRDF_array
+        else:
+            self.BRDF_array = np.load("./arrays/matrix.npy")
+        self.read_direction_info()
+        self.eta = 40
+        self.c = np.zeros((3,300))
+
+
+
+
+    def read_direction_info(self):
+        self.flatten_idx_list = np.load("./direction/flatten_idx_list.npy")
+        self.idxes_list = np.load("./direction/idxes_list.npy")
+
+        self.reduced_scaled_PC = np.load("./direction/reduced_scaled_PC.npy")
+        self.reduced_mean = np.load("./direction/reduced_mean.npy")
+
+
+
+    # per-channel reconstruction
+    def reconstruction(self):
+        # reduced Q has the shape of ndir * 300
+        Q = self.reduced_scaled_PC
+        for i in range(3):
+            x = self.observed_rgb[i,:]
+            # Q.T @ Q + eta * I -> 300 * 300
+            # Q.T -> 300 * ndir
+            # (x-mean) -> ndir * 1
+
+            self.c[i,:] = np.linalg.inv((Q.T @ Q + 40 * np.eye(Q.shape[1]))) @ Q.T @ (x - self.reduced_mean)
+
+    def eval_io_rgb(self,wi,wo):
+        theta_i,phi_i = util.to_spherical(wi)
+        theta_o,phi_o = util.to_spherical(wo)
+
+        result = merl.convert_to_hd(theta_i,phi_i,theta_o,phi_o)
+
+        theta_h,theta_d,phi_d = result[0],result[1],result[2]
+
+        value = self.eval_hd_rgb(theta_h,theta_d,phi_d)
+        return value
+
+    def eval_hd_rgb(self, theta_h, theta_d, phi_d):
+        full_idx = merl.get_index_from_hall_diff_coords(theta_h, theta_d, phi_d)
+        col = self.BRDF_array[:, full_idx]
+
+        value = np.zeros(3)
+
+        for i in range(3):
+            value[i] = np.dot(col,self.c[i,:])
+
+        return value
+
+    def eval_io_channel(self,wi,wo,channel_idx:int):
+        theta_i, phi_i = util.to_spherical(wi)
+        theta_o, phi_o = util.to_spherical(wo)
+
+        result = merl.convert_to_hd(theta_i, phi_i, theta_o, phi_o)
+
+        theta_h, theta_d, phi_d = result[0], result[1], result[2]
+
+        value = self.eval_hd_channel(theta_h,theta_d,phi_d,channel_idx)
+        return value
+
+    def eval_hd_channel(self,theta_h, theta_d, phi_d, channel_idx : int):
+        full_idx = merl.get_index_from_hall_diff_coords(theta_h, theta_d, phi_d)
+        col = self.BRDF_array[:, full_idx]
+        value = np.dot(col, self.c[channel_idx,:])
+        return value
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     os.chdir("/home/yuan/school/cp/final_project/code")
 
-    test = MERL_Collection()
+    #test = MERL_Collection()
 
-    test.generate_valid_mask()
-
-    test.test_idx()
-
+    #test.generate_valid_mask()
     #test.generate_cos_weight()
     #test.get_reference()
     #test.extract_PC()
 
-    test.find_optimal_directions(10)
+    #test.find_optimal_directions(10)
+
+    test = linear_combination_brdf(True)
 
     print("Done")
 
