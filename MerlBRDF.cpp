@@ -598,7 +598,7 @@ int get_index_from_hall_diff_coord(double theta_half, double theta_diff, double 
 	theta_half_index(theta_half) * BRDF_SAMPLING_RES_PHI_D / 2 *
 						BRDF_SAMPLING_RES_THETA_D;
 
-	std::cout << theta_half_index(theta_half) << theta_diff_index(theta_diff) << phi_diff_index(phi_diff) << std::endl;
+	//std::cout << theta_half_index(theta_half) << "," << theta_diff_index(theta_diff) << "," << phi_diff_index(phi_diff) << std::endl;
 
 	return ind;
 }
@@ -609,7 +609,7 @@ std::vector<double> get_half_diff_coord_from_index(int idx){
 
 	theta_half_idx = idx / (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D);
 	theta_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) / (BRDF_SAMPLING_RES_PHI_D / 2);
-	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D) - theta_diff_idx * (BRDF_SAMPLING_RES_PHI_D / 2));
+	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) % (BRDF_SAMPLING_RES_PHI_D / 2);
 
 	return std::vector<double>{theta_half_rad(theta_half_idx),theta_diff_rad(theta_diff_idx),phi_diff_rad(phi_diff_idx)};
 }
@@ -619,7 +619,7 @@ std::vector<int> get_half_diff_idxes_from_index(int idx){
 
 	theta_half_idx = idx / (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D);
 	theta_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) / (BRDF_SAMPLING_RES_PHI_D / 2);
-	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D) - theta_diff_idx * (BRDF_SAMPLING_RES_PHI_D / 2));
+	phi_diff_idx = (idx - theta_half_idx * (BRDF_SAMPLING_RES_PHI_D / 2 * BRDF_SAMPLING_RES_THETA_D)) % (BRDF_SAMPLING_RES_PHI_D / 2);
 
 	return std::vector<int>{theta_half_idx,theta_diff_idx,phi_diff_idx};
 }
