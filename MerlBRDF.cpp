@@ -157,6 +157,9 @@ class MERL_BRDF{
 		std::vector<double> lookup_wrapper(double theta_in,double fi_in,
 					double theta_out, double fi_out);
 
+		std::vector<double> lookup_wrapper_hdidxes(double theta_half,
+					double theta_diff, double phi_diff);
+
 
 		std::vector<double> half_diff_conversion_wrapper(double theta_in, double fi_in, double theta_out, double fi_out);
 
@@ -357,6 +360,30 @@ std::vector<double> MERL_BRDF::lookup_wrapper(double theta_in,double fi_in, doub
 	return std::vector<double>{red,green,blue};
 
 }
+
+
+std::vector<double> MERL_BRDF::lookup_wrapper_hdidxes(double theta_half_idx, double theta_diff_idx, double phi_diff_idx){
+	int ind = phi_diff_idx +
+		theta_diff_idx * BRDF_SAMPLING_RES_PHI_D / 2 +
+		theta_half_idx * BRDF_SAMPLING_RES_PHI_D / 2 *
+							BRDF_SAMPLING_RES_THETA_D;
+
+	// red_val = this->data[ind] * RED_SCALE;
+	// green_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D/2] * GREEN_SCALE;
+	// blue_val = this->data[ind + BRDF_SAMPLING_RES_THETA_H*BRDF_SAMPLING_RES_THETA_D*BRDF_SAMPLING_RES_PHI_D] * BLUE_SCALE;
+
+
+	double red_val = this->vector_data_r[ind] * RED_SCALE;
+	double green_val = this->vector_data_g[ind] * GREEN_SCALE;
+	double blue_val = this->vector_data_b[ind] * BLUE_SCALE;
+	
+	if (red_val < 0.0 || green_val < 0.0 || blue_val < 0.0)
+		fprintf(stderr, "Below horizon.\n");
+
+
+	return std::vector<double>{red_val,green_val,blue_val};
+}
+
 
 
 std::vector<double> MERL_BRDF::half_diff_conversion_wrapper(double theta_in, double fi_in, double theta_out, double fi_out){
@@ -637,6 +664,7 @@ PYBIND11_MODULE(merl,m){
 	.def(py::init<std::string&>())
 	.def("look_up",&MERL_BRDF::lookup_wrapper)
 	.def("look_up_channel",&MERL_BRDF::lookup_one_channel)
+	.def("look_up_hdidx",&MERL_BRDF::lookup_wrapper_hdidxes)
 	.def_readonly("m_size",&MERL_BRDF::size)
 	.def_readwrite("r_channel_unscaled", &MERL_BRDF::vector_data_r)
 	.def_readwrite("g_channel_unscaled", &MERL_BRDF::vector_data_g)

@@ -36,9 +36,9 @@ class MERL_Collection:
 
     half_diff_meshgrid : None
 
-    p_d : list
-    theta_d : list
-    theta_h : list
+    # p_d : list
+    # theta_d : list
+    # theta_h : list
 
 
     size: int
@@ -87,12 +87,12 @@ class MERL_Collection:
         self.X = np.zeros_like(self.BRDF_array)
 
 
-        #create meshgrid for half diff space
-        phi_d_ = np.linspace(0,179,180, endpoint=True).astype(np.uint8)
-        theta_d_ = np.linspace(0,89,90, endpoint=True).astype(np.uint8)
-        theta_h_ = np.linspace(0,89,90, endpoint=True).astype(np.uint8)
-
-        self.p_d, self.theta_d, self.theta_h = np.meshgrid(phi_d_,theta_d_,theta_h_, indexing='ij')
+        # #create meshgrid for half diff space
+        # phi_d_ = np.linspace(0,179,180, endpoint=True).astype(np.uint8)
+        # theta_d_ = np.linspace(0,89,90, endpoint=True).astype(np.uint8)
+        # theta_h_ = np.linspace(0,89,90, endpoint=True).astype(np.uint8)
+        #
+        # self.p_d, self.theta_d, self.theta_h = np.meshgrid(phi_d_,theta_d_,theta_h_, indexing='ij')
 
 
     # Phi got messed up but theta is correct. Let's just use the theta from util.getwdwh/util.getwiwo
@@ -141,10 +141,15 @@ class MERL_Collection:
             print("Reading observation matrix X")
             self.X = np.load("./arrays/X.npy")
         else:
+            # it doesn't matter for cos and median as it only depends on one direction
+
+            # In the original code, median is computed after BRDF * cos
+            cos = np.tile(self.cos_precomputed,(self.BRDF_array.shape[0],1))
+
             print("Constructing observation matrix X")
             median = np.median(self.BRDF_array,axis=0).astype(np.float32)
             median = np.tile(median,(self.BRDF_array.shape[0],1))
-            cos = np.tile(self.cos_precomputed,(self.BRDF_array.shape[0],1))
+
             self.X = np.log((self.BRDF_array * cos + self.epsilon) / (median * cos + self.epsilon))
             self.X = self.X.astype(np.float32)
             np.save("./arrays/X.npy",self.X)
@@ -484,19 +489,25 @@ class MERL_Collection:
 
 class linear_combination_brdf:
     reference_merl: MERL_Collection
-    flatten_idx_list: np.ndarray
-    idxes_list: np.ndarray
-    reduced_scaled_PC: np.ndarray
-    reduced_mean: np.ndarray
+    flatten_idx_list: np.ndarray # n_dir
+    idxes_list: np.ndarray    # n_dir * 3
+    reduced_scaled_PC: np.ndarray # n_dir * 300
+    reduced_mean: np.ndarray # n_dir
 
     # should be 3 * n_dir
     observed_rgb : np.ndarray
 
-    c : np.ndarray
+    c: np.ndarray
 
-    BRDF_array : np.ndarray
+    BRDF_array: np.ndarray
 
-    eta : float
+    eta: float
+
+    n_dir: int
+
+    # only valid entries
+    # shoule be 3 * 115xxx
+    valid_rgb : np.ndarray
 
     def __init__(self, has_data : bool, find_direction:bool = False):
         if not has_data:
@@ -506,13 +517,27 @@ class linear_combination_brdf:
             self.reference_merl.get_reference()
             self.reference_merl.extract_PC()
             if find_direction:
-                self.flatten_idx_list, self.idxes_list = self.reference_merl.find_optimal_directions(20)
+                self.flatten_idx_list, self.idxes_list = self.reference_merl.find_optimal_directions(10)
             self.BRDF_array = self.reference_merl.BRDF_array
         else:
             self.BRDF_array = np.load("./arrays/matrix.npy")
         self.read_direction_info()
         self.eta = 40
         self.c = np.zeros((3,300))
+
+
+    def initialize_merl_test_data(self):
+        mat = merl.MERL_BRDF(directory_path + "green-plastic.binary")
+
+        for i in range(self.n_dir):
+            theta_h,theta_d,phi_d = int(self.idxes_list[i][0]),int(self.idxes_list[i][1]),int(self.idxes_list[i][2])
+            value = mat.look_up_hdidx(theta_h,theta_d,phi_d)
+            self.observed_rgb[:,i] = np.array(value)
+
+        self.reconstruction()
+
+        print("Done")
+
 
 
 
@@ -524,19 +549,38 @@ class linear_combination_brdf:
         self.reduced_scaled_PC = np.load("./direction/reduced_scaled_PC.npy")
         self.reduced_mean = np.load("./direction/reduced_mean.npy")
 
+        self.n_dir = self.idxes_list.shape[0]
+        self.observed_rgb = np.zeros((3,self.n_dir))
+        self.valid_rgb = np.zeros((3,self.reference_merl.valid_col_idx.size))
+
 
 
     # per-channel reconstruction
     def reconstruction(self):
         # reduced Q has the shape of ndir * 300
-        Q = self.reduced_scaled_PC
+        Q_tilde = self.reduced_scaled_PC
+        #self.reduced_mean = self.reduced_mean.reshape((self.reduced_mean.size,1))
         for i in range(3):
             x = self.observed_rgb[i,:]
-            # Q.T @ Q + eta * I -> 300 * 300
-            # Q.T -> 300 * ndir
+            # Q_tilde.T @ Q_tilde + eta * I -> 300 * 300
+            # Q_tilde.T -> 300 * ndir
             # (x-mean) -> ndir * 1
 
-            self.c[i,:] = np.linalg.inv((Q.T @ Q + 40 * np.eye(Q.shape[1]))) @ Q.T @ (x - self.reduced_mean)
+            self.c[i,:] = np.linalg.inv((Q_tilde.T @ Q_tilde + 40 * np.eye(Q_tilde.shape[1]))) @ Q_tilde.T @ (x - self.reduced_mean)
+
+        # Q -> 115xxx * 300
+        # c -> 300 * 1
+        # mean -> 115xxx * 1
+
+
+        mean = self.reference_merl.mean[self.reference_merl.valid_col_idx]
+        Q = self.reference_merl.scaled_pc
+
+        for i in range(3):
+            self.valid_rgb[i, :] = Q @ self.c[i, :] + mean
+
+        print("Done")
+
 
     def eval_io_rgb(self,wi,wo):
         theta_i,phi_i = util.to_spherical(wi)
@@ -551,12 +595,10 @@ class linear_combination_brdf:
 
     def eval_hd_rgb(self, theta_h, theta_d, phi_d):
         full_idx = merl.get_index_from_hall_diff_coords(theta_h, theta_d, phi_d)
-        col = self.BRDF_array[:, full_idx]
 
-        value = np.zeros(3)
+        valid_idx = self.reference_merl.convert_from_fullIdx_to_validIdx(full_idx)
 
-        for i in range(3):
-            value[i] = np.dot(col,self.c[i,:])
+        value = self.valid_rgb[:, valid_idx]
 
         return value
 
@@ -573,11 +615,15 @@ class linear_combination_brdf:
 
     def eval_hd_channel(self,theta_h, theta_d, phi_d, channel_idx : int):
         full_idx = merl.get_index_from_hall_diff_coords(theta_h, theta_d, phi_d)
-        col = self.BRDF_array[:, full_idx]
-        value = np.dot(col, self.c[channel_idx,:])
+        valid_idx = self.reference_merl.convert_from_fullIdx_to_validIdx(full_idx)
+        value = self.valid_rgb[channel_idx,valid_idx]
         return value
 
-
+    def eval_hdidx(self,theta_h_idx, theta_d_idx, phi_d_idx):
+        full_idx = merl.get_index_from_half_diff_idxes(theta_h_idx,theta_d_idx,phi_d_idx)
+        valid_idx = self.reference_merl.convert_from_fullIdx_to_validIdx(full_idx)
+        value = self.valid_rgb[:, valid_idx]
+        return value
 
 
 
@@ -598,7 +644,8 @@ if __name__ == "__main__":
 
     #test.find_optimal_directions(10)
 
-    test = linear_combination_brdf(True)
+    test = linear_combination_brdf(False,False)
+    test.initialize_merl_test_data()
 
     print("Done")
 
