@@ -562,3 +562,36 @@ def test_difference(a,b,difference):
 # avoid close-to-zero sample value
 def clip_sample(u):
     return np.clip(u,1-OneMinusEpsilon,OneMinusEpsilon)
+
+
+#Create rotation matrices for rotations around x,y, and z axes.
+def RxMatrix(theta):
+    return np.array([[1,0,0],[0,np.cos(theta),-np.sin(theta)],[0,np.sin(theta),np.cos(theta)]])
+def RyMatrix(theta):
+    return np.array([[np.cos(theta), 0, np.sin(theta)],[0,1,0],[-np.sin(theta),0,np.cos(theta)]])
+def RzMatrix(theta):
+    return np.array([[np.cos(theta), -np.sin(theta), 0],[np.sin(theta), np.cos(theta), 0],[0,0,1]])
+
+#Convert rus-coords to two direction vectors
+#In:    Rusinkiewicz coordinates
+#Out:   Tuple of direction vectors (omega_o,omega_i)
+def RusinkToDirections(theta_h,theta_d,phi_d):
+    #Initially put Halfvector along Z axis
+    H = [0,0,1]
+    omega_o = [np.sin(theta_d),0,np.cos(theta_d)]
+    omega_i = [-np.sin(theta_d),0,np.cos(theta_d)]
+    #Rotate phiD-pi/2 around the z-axis
+    omega_o = np.dot(RzMatrix(phi_d-np.pi/2),omega_o)
+    omega_i = np.dot(RzMatrix(phi_d-np.pi/2),omega_i)
+    H = np.dot(RzMatrix(phi_d+np.pi/2),H)
+    #Rotate thetaH around x-axis
+    omega_o = np.dot(RxMatrix(-theta_h),omega_o)
+    omega_i = np.dot(RxMatrix(-theta_h),omega_i)
+    H = np.dot(RxMatrix(-theta_h),H)
+    #Rotate around z-axis so omega_o aligns with x-axis
+    angl = -np.arccos(np.dot((1,0,0),normalize((omega_o[0],omega_o[1],0))))*np.sign(omega_o[1])##-omega_o[1]
+    omega_o = np.dot(RzMatrix(angl),omega_o)
+    omega_i = np.dot(RzMatrix(angl),omega_i)
+    H = np.dot(RzMatrix(angl),H)
+
+    return (omega_o,omega_i)

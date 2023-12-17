@@ -45,6 +45,14 @@ class MERL_Collection:
     size: int
     valid_size: int
 
+
+    # Near field set up
+    camera_R = 1.0
+    area_radius = 0.22169466264
+    fov = 25
+    pixel_h = 512
+    pixel_w = 512
+
     
     def __init__(self) -> None:
 
@@ -299,6 +307,8 @@ class MERL_Collection:
                 flatten_idx_list_test = copy.deepcopy(flatten_idx_list)
                 flatten_idx_list_test.append(self.convert_from_validIdx_to_fullIdx(n))
 
+                test = self.get_error_metric(np.array(flatten_idx_list_test))
+
                 result = self.get_conditional_number_primary(np.array(flatten_idx_list_test))
 
                 if result < k_min:
@@ -536,6 +546,25 @@ class MERL_Collection:
         return np.linalg.cond(Q)
 
 
+    def regularized_inverse(self,A, eta):
+
+        U,s,Vt = np.linalg.svd(A,full_matrices=False)
+        Ut = U.T
+        V = Vt.T
+        Sinv = np.diag(s/(s*s+eta))
+        A_plus = V @ Sinv @ Ut
+
+        return A_plus
+
+    def get_error_metric(self,n_list: np.ndarray):
+        Q = self.scaled_pc
+        #Q_plus = np.linalg.pinv(Q)
+        Q_plus = np.load("./arrays/scaled_pc_pinv.npy")
+
+        SQ_reg_inv = self.regularized_inverse(Q,40)
+
+
+
     def test_idx(self):
         for i in range(1000):
             valid_brdf = self.BRDF_array[:,self.valid_col_idx]
@@ -583,6 +612,7 @@ class linear_combination_brdf:
     # only valid entries
     # shoule be 3 * 115xxx
     valid_rgb : np.ndarray
+
 
     def __init__(self, has_data : bool, find_direction:bool = False):
         if not has_data:
@@ -774,7 +804,7 @@ if __name__ == "__main__":
 
     #test.find_optimal_directions(10)
 
-    test = linear_combination_brdf(False,False)
+    test = linear_combination_brdf(False,True)
     test.initialize_merl_test_data()
 
     print("Done")
