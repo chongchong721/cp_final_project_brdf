@@ -287,36 +287,37 @@ class MERL_Collection:
         assert self.valid_offset[idx] != np.NAN
         return int(idx - self.valid_offset[idx])
 
+    # For planar reconstruction, we want to use most samples in the image
+    # We will have n_pixels of samples to use, this is getting the index of those samples
+    def get_related_n_from_center_direction(self,theta_h_idx,thete_d_idx,phi_d_idx):
+        theta_h,theta_d,phi_d = merl.get_half_diff_coord_from_index()
+
+
+
     def add_point(self,flatten_idx_list : list,idxes_list : list):
         assert len(flatten_idx_list) == len(idxes_list)
-        if len(flatten_idx_list) == 0:
-            t = np.argmax(np.linalg.norm(self.scaled_pc, axis=1))
-            idx_full = self.convert_from_validIdx_to_fullIdx(t)
-            flatten_idx_list.append(idx_full)
-            idxes_list.append(np.array(merl.get_half_diff_idxes_from_index(idx_full)))
 
-        else:
-            niter = 3000
-            rng = np.random.default_rng()
+        niter = 500
+        rng = np.random.default_rng()
 
-            k_min = sys.float_info.max
-            n_min = np.NAN
+        k_min = sys.float_info.max
+        n_min = np.NAN
 
-            for i in range(niter):
-                n = rng.integers(0, self.valid_col_idx.size)
-                flatten_idx_list_test = copy.deepcopy(flatten_idx_list)
-                flatten_idx_list_test.append(self.convert_from_validIdx_to_fullIdx(n))
+        for i in range(niter):
+            n = rng.integers(0, self.valid_col_idx.size)
 
-                test = self.get_error_metric(np.array(flatten_idx_list_test))
 
-                result = self.get_conditional_number_primary(np.array(flatten_idx_list_test))
+            flatten_idx_list_test = copy.deepcopy(flatten_idx_list)
+            flatten_idx_list_test.append(self.convert_from_validIdx_to_fullIdx(n))
 
-                if result < k_min:
-                    k_min = result
-                    n_min = n
+            result = self.get_error_metric(np.array(flatten_idx_list_test))
 
-            flatten_idx_list.append(self.convert_from_validIdx_to_fullIdx(n_min))
-            idxes_list.append(np.array(merl.get_half_diff_idxes_from_index(flatten_idx_list[-1])))
+            if result < k_min:
+                k_min = result
+                n_min = n
+
+        flatten_idx_list.append(self.convert_from_validIdx_to_fullIdx(n_min))
+        idxes_list.append(np.array(merl.get_half_diff_idxes_from_index(flatten_idx_list[-1])))
 
         return flatten_idx_list, idxes_list
 
@@ -352,8 +353,7 @@ class MERL_Collection:
         while len(flatten_idx_list) != n_dir:
             flatten_idx_list, idxes_list = self.add_point(flatten_idx_list, idxes_list)
 
-            if len(flatten_idx_list) == 1:
-                continue
+
 
 
             n_iter = 0
@@ -557,12 +557,55 @@ class MERL_Collection:
         return A_plus
 
     def get_error_metric(self,n_list: np.ndarray):
+        # ignore noise
+        beta = 0
+
+
+        Y_matrix = self.X - self.mean
+        Y_matrix = Y_matrix[:,self.valid_col_idx]
+
+
+
+        S = self.convert_nlist_to_selection_matrix(n_list)
+
         Q = self.scaled_pc
         #Q_plus = np.linalg.pinv(Q)
         Q_plus = np.load("./arrays/scaled_pc_pinv.npy")
 
-        SQ_reg_inv = self.regularized_inverse(Q,40)
+        SQ_reg_inv = self.regularized_inverse(S@Q,40)
 
+        co = Q_plus - SQ_reg_inv @ S
+
+
+        sum_ = 0
+
+        for i in range(Y_matrix.shape[0]):
+
+            tmp = co @ Y_matrix[i]
+
+            tmp = Q @ tmp
+
+            sum_ += np.linalg.norm(tmp)
+
+        sum_ /= Y_matrix.shape[0]
+
+        return sum_
+
+        print("Test")
+
+
+    def convert_nlist_to_selection_matrix(self,n_list : np.ndarray):
+        size = self.valid_size
+
+        n_list = np.array(n_list).astype(np.int32)
+        n_list_valid = n_list - self.valid_offset[n_list]
+        n_list_valid = n_list_valid.astype(np.int32)
+
+        s = np.zeros((n_list_valid.size,size),dtype=np.uint8)
+        for i in range(n_list_valid.size):
+            s[i][n_list_valid[i]] = 1
+
+        return s
 
 
     def test_idx(self):
@@ -623,7 +666,7 @@ class linear_combination_brdf:
             self.reference_merl.extract_PC()
             #self.reference_merl.save_dir_test()
             if find_direction:
-                self.flatten_idx_list, self.idxes_list = self.reference_merl.find_optimal_directions(10)
+                self.flatten_idx_list, self.idxes_list = self.reference_merl.find_optimal_directions(2)
             self.BRDF_array = self.reference_merl.BRDF_array
         else:
             self.BRDF_array = np.load("./arrays/matrix.npy")
