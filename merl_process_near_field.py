@@ -32,6 +32,7 @@ class MERL_Collection:
     valid_offset_noNan : np.ndarray
 
     scaled_pc : np.ndarray
+    scaled_pc_pinv : np.ndarray #psudo inverse of scaled pc
 
     epsilon = 0.001
 
@@ -289,8 +290,53 @@ class MERL_Collection:
 
     # For planar reconstruction, we want to use most samples in the image
     # We will have n_pixels of samples to use, this is getting the index of those samples
-    def get_related_n_from_center_direction(self,theta_h_idx,thete_d_idx,phi_d_idx):
-        theta_h,theta_d,phi_d = merl.get_half_diff_coord_from_index()
+    def get_related_n_from_center_direction(self,theta_h_idx,theta_d_idx,phi_d_idx):
+        image_resolution = 256
+
+        full_idx = merl.get_index_from_half_diff_idxes(theta_h_idx,theta_d_idx,phi_d_idx)
+        result = merl.get_half_diff_coord_from_index(full_idx)
+        theta_h, theta_d, phi_d = result[0],result[1],result[2]
+
+        #camera is wo light is wi
+        camera_location, light_direction = util.RusinkToDirections(theta_h,theta_d,phi_d)
+
+        possible_direction_idx_list = []
+
+        print("Searching all valid samples in the image")
+        for x in range(image_resolution):
+            for y in range(image_resolution):
+
+                x_c_t = x - image_resolution / 2 + 1
+                y_c_t = y - image_resolution / 2 + 1
+
+                if np.sqrt((x_c_t/image_resolution * 2)**2 + (y_c_t/image_resolution * 2)**2) < 0.95:
+
+                    wo_direction = camera_location - np.array([x_c_t / image_resolution * 2,y_c_t / image_resolution * 2,0])
+                    wo_direction /= np.linalg.norm(wo_direction)
+
+                    result = util.DirectionsToRusink(wo_direction,light_direction)
+
+                    theta_h_temp,theta_d_temp,phi_d_temp = result[0][1],result[0][2],result[0][0]
+
+                    idx = merl.get_index_from_hall_diff_coords(theta_h_temp,theta_d_temp,phi_d_temp)
+                    if self.valid_mask_precomputed[idx]:
+                        possible_direction_idx_list.append(idx)
+                    else:
+                        print("Invalid index detected on the plane")
+
+
+        possible_direction_idx_list = np.array(possible_direction_idx_list)
+
+        possible_direction_idx_list = np.unique(possible_direction_idx_list)
+
+        return possible_direction_idx_list.tolist()
+
+
+
+
+
+
+
 
 
 
@@ -302,8 +348,8 @@ class MERL_Collection:
 
         k_min = sys.float_info.max
         n_min = np.NAN
-
-        for i in range(niter):
+        print("Finding good initial guess")
+        for i in tqdm(range(niter)):
             n = rng.integers(0, self.valid_col_idx.size)
 
 
@@ -321,6 +367,7 @@ class MERL_Collection:
 
         return flatten_idx_list, idxes_list
 
+    # This is too slow even if I vectorized all vetorizable matrix ops. So I'm not going to use my own direction here.
     def find_optimal_directions(self,n_dir):
 
         np.seterr('raise')
@@ -345,7 +392,7 @@ class MERL_Collection:
 
         max_iter = 20000
 
-
+        self.scaled_pc_pinv = np.load("./arrays/scaled_pc_pinv.npy")
         self.scaled_pc = np.load("./arrays/scaled_PC.npy")
         self.mean = np.load("./arrays/mean.npy")
 
@@ -371,7 +418,7 @@ class MERL_Collection:
 
 
                 order = np.random.permutation(len(flatten_idx_list_current_run))
-                best_condition_num = self.get_conditional_number_primary(np.array(flatten_idx_list_current_run))
+                best_error = self.get_error_metric(np.array(flatten_idx_list_current_run))
                 for i in order:
 
 
@@ -389,20 +436,20 @@ class MERL_Collection:
 
                         # If this permutation is valid
                         if self.valid_mask_precomputed[n_new] == 1.0 and np.unique(np.array(flatten_idx_list_new)).size == len(flatten_idx_list_new):
-                            current_condition = self.get_conditional_number_primary(np.array(flatten_idx_list_new))
-                            if best_condition_num > current_condition:
-                                best_condition_num = current_condition
+                            current_error = self.get_error_metric(np.array(flatten_idx_list_new))
+                            if best_error > current_error:
+                                best_error = current_error
                                 flatten_idx_list_current_run = copy.deepcopy(flatten_idx_list_new)
                                 idxes_list_current_run = copy.deepcopy(idxes_list_new)
 
                 if last_conditional_num != np.inf:
                     print("Iteration ", n_iter)
                     print("Step size", step_size)
-                    print("Current cond num", best_condition_num)
-                    print(f"cond num reduction {last_conditional_num - best_condition_num}, {(last_conditional_num - best_condition_num) / last_conditional_num * 100}")
+                    print("Current cond num", best_error)
+                    print(f"cond num reduction {last_conditional_num - best_error}, {(last_conditional_num - best_error) / last_conditional_num * 100}")
 
 
-                if last_conditional_num!=np.inf and (last_conditional_num - best_condition_num) / last_conditional_num * 100 <= converge_percentage:
+                if last_conditional_num!=np.inf and (last_conditional_num - best_error) / last_conditional_num * 100 <= converge_percentage:
                     step_size = 1
                     n_meet_convergence += 1
                     if n_meet_convergence > 2:
@@ -415,7 +462,7 @@ class MERL_Collection:
 
                 n_iter += 1
 
-                last_conditional_num = best_condition_num
+                last_conditional_num = best_error
 
         self.save_dir_related_info(flatten_idx_list, idxes_list)
 
@@ -423,65 +470,69 @@ class MERL_Collection:
 
 
     def save_dir_related_info(self,flatten_idx_list, idxes_list):
-        np.save("./direction/flatten_idx_list.npy", np.array(flatten_idx_list))
-        np.save("./direction/idxes_list.npy", np.array(idxes_list))
+        np.save("./direction_near/flatten_idx_list.npy", np.array(flatten_idx_list))
+        np.save("./direction_nearfield/idxes_list.npy", np.array(idxes_list))
 
         n_list = np.array(flatten_idx_list).astype(np.int32)
         n_list_valid = n_list - self.valid_offset[n_list]
         n_list_valid = n_list_valid.astype(np.int32)
         q = self.scaled_pc[n_list_valid, :]
 
-        np.save("./direction/reduced_scaled_PC.npy", q)
+        np.save("./direction_nearfield/reduced_scaled_PC.npy", q)
 
         mean = self.mean[n_list.astype(np.int32)]
-        np.save("./direction/reduced_mean.npy",mean)
+        np.save("./direction_nearfield/reduced_mean.npy",mean)
 
 
     def save_dir_test(self):
+        # For 25 fov. The paper suggest 6,23,41 & 16,79,87
+
+
         coords = np.array([
-            [3,12,28],
-            [63,19,89],
-            [5,77,77],
-            [2,60,180],
-            [15,4,130],
-            [1,6,37],
-            [2,79,110],
-            [39,76,89],
-            [0,71,104],
-            [5,75,180]
+            [6,23,41],
+            [16,79,87],
         ])
 
-        f = np.zeros(10,dtype= np.int32)
-        idd = np.zeros((10,3),dtype=np.int32)
+        idd = []
+        all_index_list = []
 
+        for i in range(2):
 
+            coords = coords / 180.0 * np.pi
 
-
-        for i in range(10):
-            theta_h = np.pi * coords[i][0] / 180
-            theta_d = np.pi * coords[i][1] / 180
-            phi_d = np.pi * coords[i][2] / 180
+            theta_h,theta_d,phi_d = coords[i][0],coords[i][1],coords[i][2]
 
             idx = merl.get_index_from_hall_diff_coords(theta_h,theta_d,phi_d)
+            result = merl.get_half_diff_idxes_from_index(idx)
 
-            f[i] = idx
+            theta_h_idx, theta_d_idx, phi_d_idx = result[0],result[1],result[2]
+
+            l = self.get_related_n_from_center_direction(theta_h_idx,theta_d_idx,phi_d_idx)
+            all_index_list += l
+
+
+
+
+        for i in range(len(all_index_list)):
+            idx = all_index_list[i]
 
             idxes = merl.get_half_diff_idxes_from_index(idx)
-            idd[i][0] = idxes[0]
-            idd[i][1] = idxes[1]
-            idd[i][2] = idxes[2]
+            idd.append(idxes)
 
-        np.save("./direction/flatten_idx_list_test.npy", f)
-        np.save("./direction/idxes_list_test.npy", idd)
+        all_index_list = np.array(all_index_list).flatten()
+        idd = np.array(idd).reshape((-1,3))
 
-        n_list_valid = f - self.valid_offset[f]
+        np.save("./direction_nearfield/flatten_idx_list_test.npy", all_index_list)
+        np.save("./direction_nearfield/idxes_list_test.npy", idd)
+
+        n_list_valid = all_index_list - self.valid_offset[all_index_list]
         n_list_valid = n_list_valid.astype(np.int32)
         q = self.scaled_pc[n_list_valid, :]
 
-        np.save("./direction/reduced_scaled_PC_test.npy", q)
+        np.save("./direction_nearfield/reduced_scaled_PC_test.npy", q)
 
-        mean = self.mean[f.astype(np.int32)]
-        np.save("./direction/reduced_mean_test.npy", mean)
+        mean = self.mean[all_index_list.astype(np.int32)]
+        np.save("./direction_nearfield/reduced_mean_test.npy", mean)
 
 
     def clip_idx(self, idxes : np.ndarray):
@@ -557,6 +608,13 @@ class MERL_Collection:
         return A_plus
 
     def get_error_metric(self,n_list: np.ndarray):
+        # n_list is the center's direction
+        all_direction_idxes = []
+        for i in range(n_list.size):
+            theta_h_idx, theta_d_idx, phi_d_idx = merl.get_half_diff_idxes_from_index(n_list[i])
+            result = self.get_related_n_from_center_direction(theta_h_idx,theta_d_idx,phi_d_idx)
+            all_direction_idxes += result
+
         # ignore noise
         beta = 0
 
@@ -565,33 +623,62 @@ class MERL_Collection:
         Y_matrix = Y_matrix[:,self.valid_col_idx]
 
 
+        valid_idxes = self.convert_fulllist_to_validlist(np.array(all_direction_idxes))
 
-        S = self.convert_nlist_to_selection_matrix(n_list)
+
+        S = self.convert_nlist_to_selection_matrix(np.array(all_direction_idxes).flatten())
 
         Q = self.scaled_pc
         #Q_plus = np.linalg.pinv(Q)
-        Q_plus = np.load("./arrays/scaled_pc_pinv.npy")
+        Q_plus = self.scaled_pc_pinv
 
-        SQ_reg_inv = self.regularized_inverse(S@Q,40)
+        #SQ_reg_inv = self.regularized_inverse(S@Q,40)
+        SQ_reg_inv = self.regularized_inverse(Q[valid_idxes], 40)
 
-        co = Q_plus - SQ_reg_inv @ S
+
+        # This is putting each column of SQ_reg_inv to [idx] column in full matrix. Other colums are all zero
+        # Computing SQ_plus S in eq 12
+        #temp = SQ_reg_inv @ S
+        temp = np.zeros_like(Q_plus)
+        temp[:,valid_idxes] = SQ_reg_inv
+
+        # for i in range(SQ_reg_inv.shape[1]):
+        #     test2_test[:,valid_idxes[i]] = SQ_reg_inv[:,i]
+
+
+        co = Q_plus - temp
 
 
         sum_ = 0
 
-        for i in range(Y_matrix.shape[0]):
 
-            tmp = co @ Y_matrix[i]
 
-            tmp = Q @ tmp
 
-            sum_ += np.linalg.norm(tmp)
+        print("Computing Error for this setting")
+        # Vectorized version of the below for loop
+        result = Q @ (co @ Y_matrix.T)
+        norms = np.linalg.norm(result,axis=0)
+        return np.mean(norms)
 
-        sum_ /= Y_matrix.shape[0]
+        # This is too slow
+        # for i in tqdm(range(Y_matrix.shape[0])):
+        #
+        #     tmp = co @ Y_matrix[i]
+        #
+        #     tmp = Q @ tmp
+        #
+        #     sum_ += np.linalg.norm(tmp)
+        #
+        # sum_ /= Y_matrix.shape[0]
+        #
+        # return sum_
 
-        return sum_
 
-        print("Test")
+    def convert_fulllist_to_validlist(self, full_list : np.ndarray):
+        full_list = full_list.flatten().astype(np.int32)
+        valid_list = full_list - self.valid_offset[full_list]
+        return valid_list.astype(np.int32)
+
 
 
     def convert_nlist_to_selection_matrix(self,n_list : np.ndarray):
@@ -674,8 +761,8 @@ class linear_combination_brdf:
         self.eta = 40
 
 
-    def initialize_merl_test_data(self):
-        mat = merl.MERL_BRDF(directory_path + "green-plastic.binary")
+    def initialize_merl_test_data(self,brdf_name = "green-plastic.binary"):
+        mat = merl.MERL_BRDF(directory_path + brdf_name)
 
         for i in range(self.n_dir):
             theta_h,theta_d,phi_d = int(self.idxes_list[i][0]),int(self.idxes_list[i][1]),int(self.idxes_list[i][2])
@@ -684,6 +771,8 @@ class linear_combination_brdf:
 
         self.reconstruction()
 
+        self.compute_RMS(mat)
+
         print("Done")
 
 
@@ -691,11 +780,11 @@ class linear_combination_brdf:
 
 
     def read_direction_info(self):
-        self.flatten_idx_list = np.load("./direction/flatten_idx_list.npy")
-        self.idxes_list = np.load("./direction/idxes_list.npy")
+        self.flatten_idx_list = np.load("./direction_nearfield/flatten_idx_list_test.npy")
+        self.idxes_list = np.load("./direction_nearfield/idxes_list_test.npy")
 
-        self.reduced_scaled_PC = np.load("./direction/reduced_scaled_PC.npy")
-        self.reduced_mean = np.load("./direction/reduced_mean.npy")
+        self.reduced_scaled_PC = np.load("./direction_nearfield/reduced_scaled_PC_test.npy")
+        self.reduced_mean = np.load("./direction_nearfield/reduced_mean_test.npy")
 
         self.n_dir = self.idxes_list.shape[0]
         self.observed_rgb = np.zeros((3,self.n_dir))
@@ -814,6 +903,47 @@ class linear_combination_brdf:
         return value
 
 
+    def write_to_merl_format(self):
+        r_scale = 1500
+        g_scale = 1500 / 1.15
+        b_scale = 1500 / 1.66
+
+
+        with open("./material.bsdf","wb") as f:
+            dim = np.array([180,90,90],dtype=np.int32)
+            byte = dim.tobytes()
+            f.write(byte)
+
+            # generate full rgb
+            full_rgb = np.zeros((3,180*90*90),dtype=np.float64)
+
+            full_rgb[:,self.reference_merl.valid_col_idx] = self.valid_rgb
+
+            full_rgb = np.clip(full_rgb,0.0,None)
+
+            full_rgb[0,:] *= r_scale
+            full_rgb[1,:] *= g_scale
+            full_rgb[2,:] *= b_scale
+
+            byte = full_rgb.tobytes()
+            f.write(byte)
+
+
+    def compute_RMS(self,mat:merl.MERL_BRDF):
+        gt_valid_rgb = np.zeros_like(self.valid_rgb)
+
+        r_val = np.array(mat.r_channel_unscaled) * mat.r_scale
+        g_val = np.array(mat.g_channel_unscaled) * mat.g_scale
+        b_val = np.array(mat.b_channel_unscaled) * mat.b_scale
+
+        gt_valid_rgb[0,:] = r_val[self.reference_merl.valid_col_idx]
+        gt_valid_rgb[1,:] = g_val[self.reference_merl.valid_col_idx]
+        gt_valid_rgb[2,:] = b_val[self.reference_merl.valid_col_idx]
+
+        rms = np.sqrt(np.mean((gt_valid_rgb - self.valid_rgb) ** 2))
+
+        print(rms)
+
 
 class gt_data:
     median : np.ndarray
@@ -847,8 +977,11 @@ if __name__ == "__main__":
 
     #test.find_optimal_directions(10)
 
-    test = linear_combination_brdf(False,True)
-    test.initialize_merl_test_data()
+    brdf_name = "green-plastic.binary"
+
+    test = linear_combination_brdf(False,False)
+    test.initialize_merl_test_data(brdf_name)
+    test.write_to_merl_format()
 
     print("Done")
 

@@ -32,6 +32,7 @@ class MERL_Collection:
     valid_offset_noNan : np.ndarray
 
     scaled_pc : np.ndarray
+    scaled_pc_pinv : np.ndarray #psudo inverse of scaled pc
 
     epsilon = 0.001
 
@@ -269,6 +270,87 @@ class MERL_Collection:
             np.save("./arrays/scaled_PC.npy", result.Vh.T @ matrix_s)
 
 
+    def regularized_inverse(self,A, eta):
+
+        U,s,Vt = np.linalg.svd(A,full_matrices=False)
+        Ut = U.T
+        V = Vt.T
+        Sinv = np.diag(s/(s*s+eta))
+        A_plus = V @ Sinv @ Ut
+
+        return A_plus
+
+    def get_error_metric(self,n_list: np.ndarray):
+        # n_list is the center's direction
+        all_direction_idxes = []
+        for i in range(n_list.size):
+            theta_h_idx, theta_d_idx, phi_d_idx = merl.get_half_diff_idxes_from_index(n_list[i])
+            result = self.get_related_n_from_center_direction(theta_h_idx,theta_d_idx,phi_d_idx)
+            all_direction_idxes += result
+
+        # ignore noise
+        beta = 0
+
+
+        Y_matrix = self.X - self.mean
+        Y_matrix = Y_matrix[:,self.valid_col_idx]
+
+
+        valid_idxes = self.convert_fulllist_to_validlist(np.array(all_direction_idxes))
+
+
+        S = self.convert_nlist_to_selection_matrix(np.array(all_direction_idxes).flatten())
+
+        Q = self.scaled_pc
+        #Q_plus = np.linalg.pinv(Q)
+        Q_plus = self.scaled_pc_pinv
+
+        #SQ_reg_inv = self.regularized_inverse(S@Q,40)
+        SQ_reg_inv = self.regularized_inverse(Q[valid_idxes], 40)
+
+
+        # This is putting each column of SQ_reg_inv to [idx] column in full matrix. Other colums are all zero
+        # Computing SQ_plus S in eq 12
+        #temp = SQ_reg_inv @ S
+        temp = np.zeros_like(Q_plus)
+        temp[:,valid_idxes] = SQ_reg_inv
+
+        # for i in range(SQ_reg_inv.shape[1]):
+        #     test2_test[:,valid_idxes[i]] = SQ_reg_inv[:,i]
+
+
+        co = Q_plus - temp
+
+
+        sum_ = 0
+
+
+
+
+        print("Computing Error for this setting")
+        # Vectorized version of the below for loop
+        result = Q @ (co @ Y_matrix.T)
+        norms = np.linalg.norm(result,axis=0)
+        return np.mean(norms)
+
+        # This is too slow
+        # for i in tqdm(range(Y_matrix.shape[0])):
+        #
+        #     tmp = co @ Y_matrix[i]
+        #
+        #     tmp = Q @ tmp
+        #
+        #     sum_ += np.linalg.norm(tmp)
+        #
+        # sum_ /= Y_matrix.shape[0]
+        #
+        # return sum_
+
+
+    def convert_fulllist_to_validlist(self, full_list : np.ndarray):
+        full_list = full_list.flatten().astype(np.int32)
+        valid_list = full_list - self.valid_offset[full_list]
+        return valid_list.astype(np.int32)
 
 
     #
@@ -611,6 +693,8 @@ class linear_combination_brdf:
 
         self.reconstruction()
 
+        self.compute_RMS(mat)
+
         print("Done")
 
 
@@ -740,6 +824,47 @@ class linear_combination_brdf:
         value = self.valid_rgb[:, valid_idx]
         return value
 
+
+    def write_to_merl_format(self):
+        r_scale = 1500
+        g_scale = 1500 / 1.15
+        b_scale = 1500 / 1.66
+
+
+        with open("./material.bsdf","wb") as f:
+            dim = np.array([180,90,90],dtype=np.int32)
+            byte = dim.tobytes()
+            f.write(byte)
+
+            # generate full rgb
+            full_rgb = np.zeros((3,180*90*90),dtype=np.float64)
+
+            full_rgb[:,self.reference_merl.valid_col_idx] = self.valid_rgb
+
+            full_rgb = np.clip(full_rgb,0.0,None)
+
+            full_rgb[0,:] *= r_scale
+            full_rgb[1,:] *= g_scale
+            full_rgb[2,:] *= b_scale
+
+            byte = full_rgb.tobytes()
+            f.write(byte)
+
+
+    def compute_RMS(self,mat:merl.MERL_BRDF):
+        gt_valid_rgb = np.zeros_like(self.valid_rgb)
+
+        r_val = np.array(mat.r_channel_unscaled) * mat.r_scale
+        g_val = np.array(mat.g_channel_unscaled) * mat.g_scale
+        b_val = np.array(mat.b_channel_unscaled) * mat.b_scale
+
+        gt_valid_rgb[0,:] = r_val[self.reference_merl.valid_col_idx]
+        gt_valid_rgb[1,:] = g_val[self.reference_merl.valid_col_idx]
+        gt_valid_rgb[2,:] = b_val[self.reference_merl.valid_col_idx]
+
+        rms = np.sqrt(np.mean((gt_valid_rgb - self.valid_rgb) ** 2))
+
+        print(rms)
 
 
 class gt_data:

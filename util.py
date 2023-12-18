@@ -595,3 +595,28 @@ def RusinkToDirections(theta_h,theta_d,phi_d):
     H = np.dot(RzMatrix(angl),H)
 
     return (omega_o,omega_i)
+
+
+def DirectionsToRusink(a,b):
+    a = np.reshape(normalize(a),(-1,3))
+    b = np.reshape(normalize(b),(-1,3))
+    H = normalize((a+b)/2)
+    theta_h = np.arccos(H[:,2])
+    phi_h = np.arctan2(H[:,1],H[:,0])
+    biNormal = np.array((0,1,0))
+    normal = np.array((0,0,1))
+    tmp = rotateVector(b,normal,-phi_h)
+    diff = rotateVector(tmp, biNormal, -theta_h)
+    diff = normalize(diff)
+    theta_d = np.arccos(diff[:,2])
+    phi_d = np.mod(np.arctan2(diff[:,1],diff[:,0]),np.pi)
+    return np.column_stack((phi_d,theta_h,theta_d))
+
+
+#Rotate vector around arbitrary axis
+def rotateVector(vector, axis, angle):
+    cos_ang = np.reshape(np.cos(angle),(-1));
+    sin_ang = np.reshape(np.sin(angle),(-1));
+    vector = np.reshape(vector,(-1,3))
+    axis = np.reshape(np.array(axis),(-1,3))
+    return vector * cos_ang[:,np.newaxis] + axis*np.dot(vector,np.transpose(axis))*(1-cos_ang)[:,np.newaxis] + np.cross(axis,vector) * sin_ang[:,np.newaxis]
